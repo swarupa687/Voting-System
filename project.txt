@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Secure Voting System</title>
+  <style>
+    body{font-family:Arial,Helvetica,sans-serif;margin:0;background:#0b1220;color:#e6eef6;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:20px}
+    h1{color:#6ee7b7;margin-bottom:10px}
+    .intro{max-width:700px;text-align:center;background:#111827;padding:15px;border-radius:10px;box-shadow:0 0 10px rgba(0,0,0,0.4);margin-bottom:20px}
+    .container{width:100%;max-width:500px;background:#111827;border-radius:12px;padding:20px;box-shadow:0 0 10px rgba(0,0,0,0.5)}
+    label{display:block;margin-top:10px;font-size:14px}
+    input,select,button{width:100%;padding:10px;margin-top:5px;border:none;border-radius:8px}
+    input,select{background:#1f2937;color:#e6eef6}
+    button{background:#6ee7b7;color:#111827;font-weight:bold;cursor:pointer;margin-top:15px}
+    button[disabled]{opacity:0.5;cursor:not-allowed}
+    button:hover:enabled{opacity:0.9}
+    pre{background:#1f2937;color:#9aa4b2;padding:10px;border-radius:8px;word-wrap:break-word}
+    .chain{margin-top:20px;width:100%}
+    .block{background:#1f2937;border-radius:8px;padding:10px;margin-top:10px}
+    .note{font-size:13px;color:#9aa4b2;margin-top:8px}
+  </style>
+</head>
+<body>
+  <h1>Secure Voting System</h1>
+  <div class="intro">
+    <p><strong>Problem Statement:</strong> Traditional voting systems are vulnerable to fraud, tampering, and inefficiency. Hence, a secure, automated, and transparent voting solution is needed to ensure data integrity, voter privacy, and trustworthy election results.</p>
+  </div>
+
+  <div class="container">
+    <label>Voter ID</label>
+    <input id="voterId" type="text" placeholder="Enter Voter ID (e.g., VOTER123)">
+
+    <label>Candidate</label>
+    <select id="candidate">
+      <option value="">Select Candidate</option>
+      <option>Candidate A</option>
+      <option>Candidate B</option>
+      <option>Candidate C</option>
+    </select>
+
+    <button id="encryptBtn">Encrypt Vote</button>
+    <button id="addBtn" disabled>Add to Blockchain</button>
+    <button id="viewChainBtn">View Blockchain</button>
+    <button id="clearBtn">Clear All Votes</button>
+
+    <pre id="encryptedOutput">Encrypted vote will appear here</pre>
+    <div class="note">Note: Each voter can cast only one vote (detected by hashed Voter ID). The page will automatically display the blockchain after adding a vote.</div>
+  </div>
+  <div id="chain" class="chain"></div>
+
+  <script>
+    const enc = new TextEncoder();
+
+    function toBase64(buffer){
+      const bytes = new Uint8Array(buffer);
+      let binary = '';
+      for(let i=0;i<bytes.length;i++) binary += String.fromCharCode(bytes[i]);
+      return btoa(binary);
+    }
+
+    async function sha256Hex(msg){
+      const buf = typeof msg==='string'?enc.encode(msg):msg;
+      const hash = await crypto.subtle.digest('SHA-256',buf);
+      return Array.from(new Uint8Array(hash)).map(b=>b.toString(16).padStart(2,'0')).join('');
+    }
+
+    function loadChain(){return JSON.parse(localStorage.getItem('chain')||'[]');}
+    function saveChain(chain){localStorage.setItem('chain',JSON.stringify(chain));}
+
+    async function computeBlockHash(block){
+      const copy={index:block.index,timestamp:block.timestamp,prevHash:block.prevHash,data:block.data};
+      return await sha256Hex(JSON.stringify(copy));
+    }
+
+    // mask voter ID for demo: show first 3 and last 3 characters
+    function maskVoterId(id){
+      if(!id) return '---';
+      if(id.length <= 6) return id.slice(0,1)+'*'+id.slice(-1);
+      return id.slice(0,3)+'*'+id.slice(-3);
+    }
+
+    function renderChain(){
+      const container=document.getElementById('chain');
+      container.innerHTML='';
+      const chain=loadChain();
+      if(chain.length===0){container.innerHTML='<p>No blocks yet.</p>';return;}
+      chain.forEach(b=>{
+        const el=document.createElement('div');
+        el.className='block';
+        el.innerHTML=`<strong>Block #${b.index}</strong><br>
+          Timestamp: ${new Date(b.timestamp).toLocaleString()}<br>
+          Hash: ${b.hash.slice(0,16)}...<br>
+          Voter ID: ${maskVoterId(b.data.voterId)}<br>
+          Encrypted: ${b.data.encrypted.slice(0,32)}...`;
+        container.appendChild(el);
+      });
+    }
+
+    async function encryptVote(text){
+      const iv=crypto.getRandomValues(new Uint8Array(12));
+      const key=await crypto.subtle.generateKey({name:'AES-GCM',length:256},true,['encrypt']);
+      const cipher=await crypto.subtle.encrypt({name:'AES-GCM',iv},key,enc.encode(text));
+      return {cipher:toBase64(cipher),iv:toBase64(iv)};
+    }
+
+    const encryptBtn = document.getElementById('encryptBtn');
+    const addBtn = document.getElementById('addBtn');
+    const viewChainBtn = document.getElementById('viewChainBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const encryptedOutput = document.getElementById('encryptedOutput');
+
+    encryptBtn.addEventListener('click',async()=>{
+      const voter = document.getElementById('voterId').value.trim();
+      const candidate = document.getElementById('candidate').value;
+      if(!voter || !candidate){ alert('Enter Voter ID and select a candidate'); return; }
+
+      const voterHash = await sha256Hex(voter);
+      const chain = loadChain();
+      if(chain.some(b=>b.data && b.data.voterHash === voterHash)){
+        alert('This Voter ID has already been used to cast a vote. Duplicate voting is not allowed.');
+        return;
+      }
+
+      const payload = JSON.stringify({voter:'--REDACTED--',candidate,timestamp:new Date().toISOString()});
+      const {cipher, iv} = await encryptVote(payload);
+
+      const prepared = {cipher, iv, voterHash, voterId: voter};
+      sessionStorage.setItem('lastPreparedVote', JSON.stringify(prepared));
+
+      encryptedOutput.textContent = cipher;
+      addBtn.disabled = false;
+    });
+
+    addBtn.addEventListener('click', async ()=>{
+      const preparedRaw = sessionStorage.getItem('lastPreparedVote');
+      if(!preparedRaw){ alert('No prepared encrypted vote found. Click Encrypt Vote first.'); return; }
+      const prepared = JSON.parse(preparedRaw);
+
+      const chain = loadChain();
+      if(chain.some(b=>b.data && b.data.voterHash === prepared.voterHash)){
+        alert('This Voter ID has already been used to cast a vote. Duplicate voting is not allowed.');
+        sessionStorage.removeItem('lastPreparedVote');
+        encryptedOutput.textContent = 'Encrypted vote will appear here';
+        addBtn.disabled = true;
+        return;
+      }
+
+      const index = chain.length;
+      const prevHash = index===0 ? '0'.repeat(64) : chain[chain.length-1].hash;
+      const block = {
+        index,
+        timestamp: Date.now(),
+        prevHash,
+        data: {
+          encrypted: prepared.cipher,
+          iv: prepared.iv,
+          voterHash: prepared.voterHash,
+          voterId: prepared.voterId
+        }
+      };
+      block.hash = await computeBlockHash(block);
+      chain.push(block);
+      saveChain(chain);
+
+      sessionStorage.removeItem('lastPreparedVote');
+      encryptedOutput.textContent = 'Vote added (encrypted).';
+      addBtn.disabled = true;
+
+      alert('Vote successfully added to the mock blockchain (client-side).');
+
+      renderChain();
+    });
+
+    viewChainBtn.addEventListener('click', renderChain);
+
+    clearBtn.addEventListener('click', () => {
+      if(confirm('Are you sure you want to clear all votes?')) {
+        localStorage.removeItem('chain');
+        sessionStorage.removeItem('lastPreparedVote');
+        encryptedOutput.textContent = 'Encrypted vote will appear here';
+        document.getElementById('chain').innerHTML = '';
+        alert('All votes cleared!');
+      }
+    });
+
+    if(!sessionStorage.getItem('lastPreparedVote')) addBtn.disabled = true;
+  </script>
+</body>
+</html>
